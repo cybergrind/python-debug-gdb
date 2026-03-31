@@ -1,5 +1,5 @@
 NAME := python-debug
-.PHONY: image run test test-gil
+.PHONY: image run test test-gil test-gc
 
 image:
 	docker build -t $(NAME) .
@@ -60,3 +60,30 @@ test-gil: image
 	@docker exec $(NAME)-gil pgrep -f gil_demo > /dev/null && echo "Process still alive"
 	@echo "=== SUCCESS: GIL contention test passed ==="
 	docker rm -f $(NAME)-gil
+
+test-gc: image
+	@echo "=== Starting container ==="
+	docker rm -f $(NAME)-gc 2>/dev/null || true
+	docker run -d --name $(NAME)-gc --cap-add=SYS_PTRACE $(NAME) sleep infinity
+	@echo "=== Launching GC demo ==="
+	docker exec -d $(NAME)-gc python /script/gc_demo.py
+	@echo "=== Waiting for GC demo ==="
+	@for i in $$(seq 1 20); do \
+		if docker exec $(NAME)-gc test -f /tmp/gc_demo_ready; then \
+			echo "GC demo ready"; \
+			break; \
+		fi; \
+		if [ $$i -eq 20 ]; then \
+			echo "ERROR: GC demo did not start"; \
+			docker rm -f $(NAME)-gc; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done
+	@sleep 2
+	@echo "=== Dumping backtrace (will break inside GC) ==="
+	docker exec $(NAME)-gc bash -c '/script/dump_gc_trace.sh $$(pgrep -of "python.*gc_demo")'
+	@echo "=== Verifying process survived detach ==="
+	@docker exec $(NAME)-gc pgrep -f gc_demo > /dev/null && echo "Process still alive"
+	@echo "=== SUCCESS: GC freeze test passed ==="
+	docker rm -f $(NAME)-gc
